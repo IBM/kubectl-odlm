@@ -1,0 +1,44 @@
+before:
+  hooks:
+  - go mod download
+builds:
+- id: kubectl-odlm
+  main: ./
+  binary: kubectl-odlm
+  env:
+  - CGO_ENABLED=0
+  asmflags:
+  - all=-trimpath={{ dir .Env.PWD }}
+  gcflags:
+  - all=-trimpath={{ dir .Env.PWD }}
+  ldflags:
+  - -s
+  - -w
+  - -X github.com/IBM/kubectl-odlm/internal/version.GitVersion={{.Env.GIT_VERSION}}
+  - -X github.com/IBM/kubectl-odlm/internal/version.GitCommit={{.Env.GIT_COMMIT}}
+  - -X github.com/IBM/kubectl-odlm/internal/version.GitCommitTime={{.Env.GIT_COMMIT_TIME}}
+  - -X github.com/IBM/kubectl-odlm/internal/version.GitTreeState={{.Env.GIT_TREE_STATE}}
+  goos:
+  - linux
+  - darwin
+  - windows
+  goarch:
+  - amd64
+  - arm64
+  ignore:
+  - goos: darwin
+    goarch: arm64
+  - goos: windows
+    goarch: arm64
+
+checksum:
+  name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
+
+archives:
+- builds:
+  - kubectl-odlm
+  name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+  wrap_in_directory: false
+  format: tar.gz
+  files:
+  - LICENSE
