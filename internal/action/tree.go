@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/gosuri/uitable"
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/duration"
 
 	odlmv1alpha1 "github.com/IBM/operand-deployment-lifecycle-manager/api/v1alpha1"
 )
@@ -28,7 +30,7 @@ var (
 
 type OperandRequestTree struct {
 	RegistryMap            map[types.NamespacedName][]string
-	OperandRequestInstance types.NamespacedName
+	OperandRequestInstance *odlmv1alpha1.OperandRequest
 	SubscriptionList       []types.NamespacedName
 }
 
@@ -55,12 +57,12 @@ func (t *Tree) printOpreq(opreqName, opreqNamespace string, opreqTree *OperandRe
 		Namespace: opreqNamespace,
 		Name:      opreqName,
 	}
-	opreqTree.OperandRequestInstance = key
 	opreq := &odlmv1alpha1.OperandRequest{}
 	if err := t.Config.Client.Get(t.Ctx, key, opreq); err != nil {
-		fmt.Println("Error: ", err)
+		fmt.Print(err)
 		os.Exit(1)
 	}
+	opreqTree.OperandRequestInstance = opreq
 	opreqTree.RegistryMap = make(map[types.NamespacedName][]string)
 	for _, req := range opreq.Spec.Requests {
 		var operatorList []string
@@ -107,11 +109,12 @@ func checkoptFromRegistry(name string, opreg *odlmv1alpha1.OperandRegistry) (fin
 }
 
 func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) {
-
+	opreqCreationTimestamp := opreqTree.OperandRequestInstance.GetCreationTimestamp()
+	opreqAge := duration.HumanDuration(time.Since(opreqCreationTimestamp.Time))
 	tbl.AddRow(opreqTree.OperandRequestInstance.Namespace, fmt.Sprintf("%s%s/%s",
 		gray.Sprint(printPrefix("")),
 		"OperandRequest",
-		color.New(color.Bold).Sprint(opreqTree.OperandRequestInstance.Name)))
+		color.New(color.Bold).Sprint(opreqTree.OperandRequestInstance.Name)), opreqTree.OperandRequestInstance.Status.Phase, opreqAge)
 	for i, sub := range opreqTree.SubscriptionList {
 		subInstance := &v1alpha1.Subscription{}
 		if err := t.Config.Client.Get(t.Ctx, sub, subInstance); err != nil {
@@ -124,10 +127,12 @@ func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) 
 		default:
 			subPrefix = firstElemPrefix
 		}
+		subCreationTimestamp := subInstance.GetCreationTimestamp()
+		subAge := duration.HumanDuration(time.Since(subCreationTimestamp.Time))
 		tbl.AddRow(sub.Namespace, fmt.Sprintf("%s%s/%s",
 			gray.Sprint(printPrefix(subPrefix)),
 			"Subscription",
-			color.New(color.Bold).Sprint(sub.Name)))
+			color.New(color.Bold).Sprint(sub.Name)), subInstance.Status.State, subAge)
 		if subInstance.Status.InstalledCSV == "" {
 			continue
 		}
@@ -136,10 +141,12 @@ func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) 
 			continue
 		}
 		csvPrefix := subPrefix + lastElemPrefix
+		csvCreationTimestamp := csvInstance.GetCreationTimestamp()
+		csvAge := duration.HumanDuration(time.Since(csvCreationTimestamp.Time))
 		tbl.AddRow(sub.Namespace, fmt.Sprintf("%s%s/%s",
 			gray.Sprint(printPrefix(csvPrefix)),
 			"ClusterServiceVersion",
-			color.New(color.Bold).Sprint(subInstance.Status.InstalledCSV)))
+			color.New(color.Bold).Sprint(subInstance.Status.InstalledCSV)), csvInstance.Status.Phase, csvAge)
 		almExamples, ok := csvInstance.Annotations["alm-examples"]
 		if !ok {
 			continue
@@ -178,10 +185,18 @@ func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) 
 			default:
 				crPrefix = csvPrefix + firstElemPrefix
 			}
+			crCreationTimestamp := unstruct.GetCreationTimestamp()
+			var phase string
+			if _, ok := unstruct.Object["status"]; ok {
+				if unstruct.Object["status"].(map[string]interface{})["phase"] != nil {
+					phase = unstruct.Object["status"].(map[string]interface{})["phase"].(string)
+				}
+			}
+			crAge := duration.HumanDuration(time.Since(crCreationTimestamp.Time))
 			tbl.AddRow(sub.Namespace, fmt.Sprintf("%s%s/%s",
 				gray.Sprint(printPrefix(crPrefix)),
 				unstruct.Object["kind"].(string),
-				color.New(color.Bold).Sprint(name)))
+				color.New(color.Bold).Sprint(name)), phase, crAge)
 		}
 	}
 
