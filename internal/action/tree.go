@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/fatih/color"
@@ -11,6 +12,8 @@ import (
 	"github.com/operator-framework/api/pkg/operators/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+
+	odlmv1alpha1 "github.com/IBM/operand-deployment-lifecycle-manager/api/v1alpha1"
 )
 
 const (
@@ -20,45 +23,103 @@ const (
 )
 
 var (
-	gray  = color.New(color.FgHiBlack)
+	gray = color.New(color.FgHiBlack)
 )
 
 type OperandRequestTree struct {
-	Config                 *Configuration
 	RegistryMap            map[types.NamespacedName][]string
 	OperandRequestInstance types.NamespacedName
 	SubscriptionList       []types.NamespacedName
-	Ctx                    context.Context
 }
 
-func NewOperandRequestTree(cfg *Configuration) *OperandRequestTree {
-	return &OperandRequestTree{
+type Tree struct {
+	Config *Configuration
+	Ctx    context.Context
+	Table  *uitable.Table
+}
+
+func NewTree(cfg *Configuration) *Tree {
+	return &Tree{
 		Config: cfg,
 	}
 }
 
-func (t *OperandRequestTree) TreeView() {
-	tbl := uitable.New()
-	tbl.Separator = "  "
-	tbl.AddRow("NAMESPACE", "NAME")
-	t.treeViewInner(tbl)
-	fmt.Fprintln(color.Output, tbl)
+func (t *Tree) TreeView(opreqName string) {
+	opreqTree := &OperandRequestTree{}
+	t.printOpreq(opreqName, t.Config.Namespace, opreqTree)
+	t.treeViewInner(t.Table, opreqTree)
 }
 
-func (t *OperandRequestTree) treeViewInner(tbl *uitable.Table) {
+func (t *Tree) printOpreq(opreqName, opreqNamespace string, opreqTree *OperandRequestTree) {
+	key := types.NamespacedName{
+		Namespace: opreqNamespace,
+		Name:      opreqName,
+	}
+	opreqTree.OperandRequestInstance = key
+	opreq := &odlmv1alpha1.OperandRequest{}
+	if err := t.Config.Client.Get(t.Ctx, key, opreq); err != nil {
+		fmt.Println("Error: ", err)
+		os.Exit(1)
+	}
+	opreqTree.RegistryMap = make(map[types.NamespacedName][]string)
+	for _, req := range opreq.Spec.Requests {
+		var operatorList []string
+		for _, opt := range req.Operands {
+			operatorList = append(operatorList, opt.Name)
+		}
+		var registryNamespace string
+		if req.RegistryNamespace == "" {
+			registryNamespace = t.Config.Namespace
+		} else {
+			registryNamespace = req.RegistryNamespace
+		}
+		key = types.NamespacedName{Namespace: registryNamespace, Name: req.Registry}
+		opreqTree.RegistryMap[key] = operatorList
+	}
+	for opreg, opNameList := range opreqTree.RegistryMap {
+		opregInstance := &odlmv1alpha1.OperandRegistry{}
+		if err := t.Config.Client.Get(t.Ctx, opreg, opregInstance); err != nil {
+			fmt.Println("Error: ", err)
+			continue
+		}
+		for _, opName := range opNameList {
+			find, opt := checkoptFromRegistry(opName, opregInstance)
+			if !find {
+				continue
+			}
+			opreqTree.SubscriptionList = append(opreqTree.SubscriptionList, opt)
+		}
+	}
+}
+func checkoptFromRegistry(name string, opreg *odlmv1alpha1.OperandRegistry) (find bool, opt types.NamespacedName) {
+	for _, opt := range opreg.Spec.Operators {
+		if opt.Name == name {
+			var ns string
+			if opt.Scope == "cluster" {
+				ns = "openshift-operators"
+			} else {
+				ns = opt.Namespace
+			}
+			return true, types.NamespacedName{Namespace: ns, Name: name}
+		}
+	}
+	return
+}
 
-	tbl.AddRow(t.OperandRequestInstance.Namespace, fmt.Sprintf("%s%s/%s",
+func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) {
+
+	tbl.AddRow(opreqTree.OperandRequestInstance.Namespace, fmt.Sprintf("%s%s/%s",
 		gray.Sprint(printPrefix("")),
 		"OperandRequest",
-		color.New(color.Bold).Sprint(t.OperandRequestInstance.Name)))
-	for i, sub := range t.SubscriptionList {
+		color.New(color.Bold).Sprint(opreqTree.OperandRequestInstance.Name)))
+	for i, sub := range opreqTree.SubscriptionList {
 		subInstance := &v1alpha1.Subscription{}
 		if err := t.Config.Client.Get(t.Ctx, sub, subInstance); err != nil {
 			continue
 		}
 		var subPrefix string
 		switch i {
-		case len(t.SubscriptionList) - 1:
+		case len(opreqTree.SubscriptionList) - 1:
 			subPrefix = lastElemPrefix
 		default:
 			subPrefix = firstElemPrefix
