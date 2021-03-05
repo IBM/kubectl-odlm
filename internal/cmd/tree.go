@@ -24,7 +24,7 @@ func newODLMTreeCmd(cfg *action.Configuration) *cobra.Command {
 			tree.Ctx = command.Context()
 			tree.Table = uitable.New()
 			tree.Table.Separator = "  "
-			tree.Table.AddRow("NAMESPACE", "NAME", "PHASE", "AGE")
+			tree.Table.AddRow("NAMESPACE", "NAME", "READY/REASON", "AGE")
 			if len(args) == 1 {
 				opreqName := args[0]
 				tree.TreeView(opreqName)

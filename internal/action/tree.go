@@ -111,10 +111,17 @@ func checkoptFromRegistry(name string, opreg *odlmv1alpha1.OperandRegistry) (fin
 func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) {
 	opreqCreationTimestamp := opreqTree.OperandRequestInstance.GetCreationTimestamp()
 	opreqAge := duration.HumanDuration(time.Since(opreqCreationTimestamp.Time))
+	unstructedOpreq := &unstructured.Unstructured{}
+	err := t.Config.Scheme.Convert(opreqTree.OperandRequestInstance, unstructedOpreq, nil)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	reqReason := extractStatus(*unstructedOpreq)
 	tbl.AddRow(opreqTree.OperandRequestInstance.Namespace, fmt.Sprintf("%s%s/%s",
 		gray.Sprint(printPrefix("")),
 		"OperandRequest",
-		color.New(color.Bold).Sprint(opreqTree.OperandRequestInstance.Name)), opreqTree.OperandRequestInstance.Status.Phase, opreqAge)
+		color.New(color.Bold).Sprint(opreqTree.OperandRequestInstance.Name)), reqReason, opreqAge)
 	for i, sub := range opreqTree.SubscriptionList {
 		subInstance := &v1alpha1.Subscription{}
 		if err := t.Config.Client.Get(t.Ctx, sub, subInstance); err != nil {
@@ -132,7 +139,7 @@ func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) 
 		tbl.AddRow(sub.Namespace, fmt.Sprintf("%s%s/%s",
 			gray.Sprint(printPrefix(subPrefix)),
 			"Subscription",
-			color.New(color.Bold).Sprint(sub.Name)), subInstance.Status.State, subAge)
+			color.New(color.Bold).Sprint(sub.Name)), "", subAge)
 		if subInstance.Status.InstalledCSV == "" {
 			continue
 		}
@@ -143,10 +150,11 @@ func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) 
 		csvPrefix := subPrefix + lastElemPrefix
 		csvCreationTimestamp := csvInstance.GetCreationTimestamp()
 		csvAge := duration.HumanDuration(time.Since(csvCreationTimestamp.Time))
+		csvReason := extractCSVStatus(*csvInstance)
 		tbl.AddRow(sub.Namespace, fmt.Sprintf("%s%s/%s",
 			gray.Sprint(printPrefix(csvPrefix)),
 			"ClusterServiceVersion",
-			color.New(color.Bold).Sprint(subInstance.Status.InstalledCSV)), csvInstance.Status.Phase, csvAge)
+			color.New(color.Bold).Sprint(subInstance.Status.InstalledCSV)), csvReason, csvAge)
 		almExamples, ok := csvInstance.Annotations["alm-examples"]
 		if !ok {
 			continue
@@ -160,8 +168,9 @@ func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) 
 			continue
 		}
 
-		// Merge OperandConfig and ClusterServiceVersion alm-examples
-		for i, crTemplate := range crTemplates {
+		var crList []unstructured.Unstructured
+		// Merge OandConfig and ClusterServiceVersion alm-examples
+		for _, crTemplate := range crTemplates {
 
 			// Create an unstructed object for CR and request its value to CR template
 			var unstruct unstructured.Unstructured
@@ -178,28 +187,26 @@ func (t *Tree) treeViewInner(tbl *uitable.Table, opreqTree *OperandRequestTree) 
 				continue
 			}
 
+			crList = append(crList, unstruct)
+		}
+		for i, cr := range crList {
 			var crPrefix string
 			switch i {
-			case len(crTemplates) - 1:
+			case len(crList) - 1:
 				crPrefix = csvPrefix + lastElemPrefix
 			default:
 				crPrefix = csvPrefix + firstElemPrefix
 			}
-			crCreationTimestamp := unstruct.GetCreationTimestamp()
-			var phase string
-			if _, ok := unstruct.Object["status"]; ok {
-				if unstruct.Object["status"].(map[string]interface{})["phase"] != nil {
-					phase = unstruct.Object["status"].(map[string]interface{})["phase"].(string)
-				}
-			}
+			crCreationTimestamp := cr.GetCreationTimestamp()
+			name := cr.Object["metadata"].(map[string]interface{})["name"].(string)
+			crReason := extractStatus(cr)
 			crAge := duration.HumanDuration(time.Since(crCreationTimestamp.Time))
 			tbl.AddRow(sub.Namespace, fmt.Sprintf("%s%s/%s",
 				gray.Sprint(printPrefix(crPrefix)),
-				unstruct.Object["kind"].(string),
-				color.New(color.Bold).Sprint(name)), phase, crAge)
+				cr.Object["kind"].(string),
+				color.New(color.Bold).Sprint(name)), crReason, crAge)
 		}
 	}
-
 }
 
 func printPrefix(p string) string {
@@ -215,4 +222,44 @@ func printPrefix(p string) string {
 		p = strings.ReplaceAll(p, lastElemPrefix, strings.Repeat(" ", len([]rune(lastElemPrefix))))
 	}
 	return p
+}
+
+func extractStatus(obj unstructured.Unstructured) (condReason string) {
+	statusF, ok := obj.Object["status"]
+	if !ok {
+		return ""
+	}
+	statusV, ok := statusF.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	conditionsF, ok := statusV["conditions"]
+	if !ok {
+		return ""
+	}
+	conditionsV, ok := conditionsF.([]interface{})
+	if !ok {
+		return ""
+	}
+
+	for _, cond := range conditionsV {
+		condM, ok := cond.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		condReason, _ = condM["reason"].(string)
+		condStatus, _ := condM["status"].(string)
+		if len(condStatus) != 0 {
+			condReason = condStatus + "/" + condReason
+		}
+	}
+	return
+}
+
+func extractCSVStatus(csv v1alpha1.ClusterServiceVersion) (condReason string) {
+	conditions := csv.Status.Conditions
+	for _, cond := range conditions {
+		condReason = string(cond.Phase) + "/" + string(cond.Reason)
+	}
+	return
 }
